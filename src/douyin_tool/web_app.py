@@ -952,6 +952,13 @@ def cancel_task(tid: str):
 @web.route("/api/retry/<tid>", methods=["POST"])
 def retry_failed(tid: str):
     """重试任务中失败的作品；body 可带 aweme_ids 指定子集。"""
+    cfg = cfg_mod.load_config()
+    if not cfg.get("cookie"):
+        return jsonify({
+            "ok": False, "need_login": True,
+            "message": "尚未登录抖音。请先点上方「打开登录窗口」完成一次性登录。",
+        }), 400
+
     data = request.get_json(silent=True) or {}
     want_ids = data.get("aweme_ids")
     if want_ids is not None:
@@ -1025,13 +1032,6 @@ def retry_failed(tid: str):
             total=len(failed_ids),
             result=None,
         )
-
-    cfg = cfg_mod.load_config()
-    if not cfg.get("cookie"):
-        return jsonify({
-            "ok": False, "need_login": True,
-            "message": "尚未登录抖音。请先点上方「打开登录窗口」完成一次性登录。",
-        }), 400
 
     ids_to_retry = list(failed_ids)
     meta_copy = dict(meta)
