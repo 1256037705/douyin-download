@@ -277,8 +277,9 @@ class InstallerUpgradeTests(unittest.TestCase):
     def test_installer_has_upgrade_hooks(self):
         iss = (ROOT / "build" / "installer.iss").read_text(encoding="utf-8")
         self.assertIn('AppVersion "1.1.0"', iss)
-        self.assertIn("CloseApplications=yes", iss)
-        self.assertIn("ForceCloseApplications=yes", iss)
+        # Inno Setup 无 ForceCloseApplications 指令；用 CloseApplications=force
+        self.assertIn("CloseApplications=force", iss)
+        self.assertNotIn("ForceCloseApplications=", iss)
         self.assertIn("UsePreviousAppDir=yes", iss)
         self.assertIn("PrepareToInstall", iss)
         self.assertIn("KillRunningApp", iss)

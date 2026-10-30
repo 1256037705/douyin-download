@@ -242,6 +242,91 @@ def build_kwargs(cfg: Dict[str, Any], mode: str = "one",
 
 
 # ---------------------------------------------------------------------------
+# 视频类型 / 最高清晰度选择
+# ---------------------------------------------------------------------------
+# 与 f2 `DouyinDownloader.handler_download` 一致：只有这些 aweme_type 会走 download_video。
+_VIDEO_AWEME_TYPES = frozenset({0, 55, 61, 109, 201})
+_IMAGE_AWEME_TYPE = 68
+_SKIP_NON_VIDEO_MSG = "图文作品已跳过，仅下载视频"
+
+
+def is_video_aweme(data: Dict[str, Any]) -> bool:
+    """是否应按视频下载。
+
+    aweme_type 缺省时视为视频（兼容旧假数据 / 未带类型的条目）；
+    显式为 68 或其它非视频类型时返回 False。
+    """
+    if not isinstance(data, dict):
+        return False
+    t = data.get("aweme_type")
+    if t is None:
+        return True
+    try:
+        return int(t) in _VIDEO_AWEME_TYPES
+    except (TypeError, ValueError):
+        return True
+
+
+def select_highest_play_addr(
+    data: Dict[str, Any],
+    raw_aweme: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """从原始 ``video.bit_rate`` 按分辨率×码率选最高，写回 ``data["video_play_addr"]``。
+
+    f2 的 filter 固定取 ``bit_rate[0]``，不一定是最高清晰度。这里在下载前
+    用原始 aweme 重选，并保持 f2 期望的 url_list（``list[str]``）形态。
+    无 bit_rate 或选不出可用地址时，保持原 ``video_play_addr`` 不动。
+    """
+    if not isinstance(data, dict):
+        return data
+
+    source = raw_aweme if isinstance(raw_aweme, dict) else None
+    video = None
+    if source is not None:
+        maybe = source.get("video")
+        if isinstance(maybe, dict):
+            video = maybe
+    if video is None:
+        maybe = data.get("video") if isinstance(data.get("video"), dict) else None
+        video = maybe
+    if not isinstance(video, dict):
+        return data
+
+    bit_rates = video.get("bit_rate")
+    if not isinstance(bit_rates, list) or not bit_rates:
+        return data
+
+    best_url_list: Optional[List[str]] = None
+    best_score: Optional[tuple] = None  # (area, bit_rate)
+    for br in bit_rates:
+        if not isinstance(br, dict):
+            continue
+        play_addr = br.get("play_addr")
+        if not isinstance(play_addr, dict):
+            continue
+        url_list = play_addr.get("url_list") or []
+        if not isinstance(url_list, list) or not url_list:
+            continue
+        try:
+            w = int(play_addr.get("width") or br.get("width") or 0)
+            h = int(play_addr.get("height") or br.get("height") or 0)
+        except (TypeError, ValueError):
+            w = h = 0
+        try:
+            rate = int(br.get("bit_rate") or 0)
+        except (TypeError, ValueError):
+            rate = 0
+        score = (h * w, rate)
+        if best_score is None or score > best_score:
+            best_score = score
+            best_url_list = [str(u) for u in url_list if u]
+
+    if best_url_list:
+        data["video_play_addr"] = best_url_list
+    return data
+
+
+# ---------------------------------------------------------------------------
 # 链接 → 作品 ID：本地正则优先，短链才联网
 # ---------------------------------------------------------------------------
 # 背景：f2 的 AwemeIdFetcher 只看「跳转后 URL 的路径」里有没有
@@ -526,9 +611,24 @@ async def download_one(
         except Exception as e:  # noqa: BLE001
             raise _wrap_error(e) from e
 
+        # 从原始响应取 aweme_detail（或整包），供清晰度重选；_to_dict 之后写回。
+        raw_pack = detail._to_raw() if hasattr(detail, "_to_raw") else None
+        raw_aweme = None
+        if isinstance(raw_pack, dict):
+            detail_raw = raw_pack.get("aweme_detail")
+            raw_aweme = detail_raw if isinstance(detail_raw, dict) else raw_pack
+
         data = detail._to_dict()
+        select_highest_play_addr(data, raw_aweme)
         nickname = data.get("nickname") or "unknown"
         desc = data.get("desc") or ""
+
+        if not is_video_aweme(data):
+            err = "这是图文/非视频作品，当前仅支持下载视频文件。"
+            report(3, 3, "跳过",
+                   _item_record(aweme_id, status="skipped",
+                                nickname=nickname, desc=desc, error=err))
+            raise DouyinError(err)
 
         report(2, 3, "下载视频中...")
 
@@ -549,7 +649,7 @@ async def download_one(
             raise
 
         if not saved:
-            err = "没有生成视频文件（可能为图文作品、私密作品或下载失败）。"
+            err = "没有生成视频文件（图文已跳过；也可能是私密作品或下载失败）。"
             report(3, 3, "失败",
                    _item_record(aweme_id, status="failed",
                                 nickname=nickname, desc=desc, error=err))
@@ -688,6 +788,14 @@ async def download_user_posts(
 
                 past_range = False
                 items = page._to_list() or []
+                # 原始 aweme_list：按 aweme_id 对齐，供最高清晰度重选
+                raw_by_id: Dict[str, Any] = {}
+                raw_pack = page._to_raw() if hasattr(page, "_to_raw") else None
+                if isinstance(raw_pack, dict):
+                    for raw_a in (raw_pack.get("aweme_list") or []):
+                        if isinstance(raw_a, dict) and raw_a.get("aweme_id") is not None:
+                            raw_by_id[str(raw_a["aweme_id"])] = raw_a
+
                 for item in items:
                     _check_stop(should_stop)
 
@@ -704,6 +812,22 @@ async def download_user_posts(
 
                     nickname = item.get("nickname") or "unknown"
                     desc = item.get("desc") or ""
+
+                    # 图文 / 非视频：记为跳过，不当失败刷屏
+                    if not is_video_aweme(item):
+                        skipped.append(aweme_id)
+                        report(len(skipped) + len(candidates),
+                               max_counts or (len(skipped) + len(candidates)),
+                               _SKIP_NON_VIDEO_MSG,
+                               _item_record(aweme_id, status="skipped",
+                                            nickname=nickname, desc=desc,
+                                            error=_SKIP_NON_VIDEO_MSG))
+                        if max_counts and len(skipped) + len(candidates) >= max_counts:
+                            break
+                        continue
+
+                    # 下载前把 video_play_addr 改成 bit_rate 里分辨率×码率最高的
+                    select_highest_play_addr(item, raw_by_id.get(aweme_id))
 
                     status = cfg_mod.history_status(download_dir, scope, aweme_id)
                     if skip_downloaded and status == "ok":
@@ -773,7 +897,7 @@ async def download_user_posts(
                 saved = await _save_video(kwargs, item, Path(kwargs["path"]),
                                           nickname=nickname, desc=desc)
                 if not saved:
-                    raise DouyinError("没有生成视频文件（可能为图文作品、私密作品或下载失败）。")
+                    raise DouyinError("没有生成视频文件（图文已跳过；也可能是私密作品或下载失败）。")
                 cfg_mod.mark_downloaded(download_dir, scope, {aweme_id: saved})
                 entry = {
                     "aweme_id": aweme_id,
@@ -980,7 +1104,7 @@ def _process_save_one(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         saved = run_async(_save_video(kwargs, item, base, nickname=nickname, desc=desc))
         if not saved:
-            return {"ok": False, "error": "没有生成视频文件（可能为图文作品、私密作品或下载失败）。"}
+            return {"ok": False, "error": "没有生成视频文件（图文已跳过；也可能是私密作品或下载失败）。"}
         cfg_mod.mark_downloaded(download_dir, scope, {aweme_id: saved})
         return {"ok": True, "path": saved, "aweme_id": aweme_id}
     except Exception as e:  # noqa: BLE001
@@ -1420,7 +1544,11 @@ async def parse_link_info(url: str) -> Dict[str, Any]:
     #    是「在主页里点开了某个作品」，用户想要的是那条作品，不是整个主页。
     aid = extract_aweme_id(raw)
     if aid:
-        return result("video", aid, f"作品 {aid}")
+        is_note = bool(re.search(r"/(?:share/)?note/", raw))
+        info = result("video", aid, f"图文笔记 {aid}" if is_note else f"作品 {aid}")
+        if is_note:
+            info["note"] = True
+        return info
 
     # 3) 本地抠 sec_user_id（不联网）
     sid = extract_sec_user_id(raw)

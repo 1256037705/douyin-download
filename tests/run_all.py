@@ -36,6 +36,7 @@ SCRIPTS = [
     "test_system_integrity", # 原子持久化、并发、强制下载与取消
     "test_concurrency_retry", # 并发 workers、条目进度、失败重试、安装升级脚本
     "test_desc_truncate",    # 文案截断与文件名长度（会 import f2）
+    "test_quality_video_only",  # 最高清晰度、仅视频、任务列表滚动
     "test_web_api",          # Web API（起真实 Flask 服务，127.0.0.1:8815）
     "test_lifecycle",        # 关页面即退出（起真实子进程，127.0.0.1:8821，约 25 秒）
 ]

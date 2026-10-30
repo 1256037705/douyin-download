@@ -864,7 +864,7 @@ async function parseLink(){
   if (data.ok){
     const i = data.info;
     // 顺便展示规范化后的地址：原链接里的 ?modal_id=xxx&type=general 等都会被抹掉
-    toast(`识别为：${i.kind === 'video' ? '单个作品' : '用户主页'} · ${i.url || i.id}`);
+    toast(`识别为：${i.note ? '图文笔记' : (i.kind === 'video' ? '单个作品' : '用户主页')} · ${i.url || i.id}`);
   } else {
     toast(data.message || '解析失败', 'err');
   }
@@ -925,6 +925,12 @@ async function refreshTasks(){
   lastTasks = tasks;
   if (!tasks.length){ box.innerHTML = '<div class="empty">暂无任务</div>'; return; }
 
+  // 重绘前记下滚动位置，避免 1.5s 轮询整段 innerHTML 把滚动条拉回顶端
+  const savedScroll = { __taskList: box.scrollTop };
+  box.querySelectorAll('.item-list[data-tid]').forEach(el => {
+    savedScroll[el.getAttribute('data-tid')] = el.scrollTop;
+  });
+
   box.innerHTML = tasks.map(t => {
     const label = t.kind === 'post' ? '主页批量' : (t.kind === 'retry' ? '失败重试' : '单个作品');
     const pct = t.total > 0 ? Math.min(100, Math.round(t.current / t.total * 100)) : (t.status==='done'?100:0);
@@ -955,7 +961,7 @@ async function refreshTasks(){
       } else if (r.path){
         extra = `<div class="msg">${escapeHtml(r.nickname||'')} ${escapeHtml((r.desc_full||r.desc||'').slice(0,40))}</div>`;
       } else if (r.skipped === false && r.path === null){
-        extra = `<div class="msg warn">没有生成视频文件（可能为图文作品 / 已被屏蔽 / 私密）</div>`;
+        extra = `<div class="msg warn">没有生成视频文件（图文已跳过；也可能已被屏蔽 / 私密）</div>`;
       }
     }
     const err = t.error ? `<div class="msg err">${escapeHtml(t.error)}</div>` : '';
@@ -982,6 +988,15 @@ async function refreshTasks(){
         ${retryAll}
       </div>`;
   }).join('');
+
+  // 重绘后恢复滚动位置（含 #taskList 自身与各条目列表）
+  box.scrollTop = savedScroll.__taskList || 0;
+  box.querySelectorAll('.item-list[data-tid]').forEach(el => {
+    const tid = el.getAttribute('data-tid');
+    if (Object.prototype.hasOwnProperty.call(savedScroll, tid)) {
+      el.scrollTop = savedScroll[tid];
+    }
+  });
 }
 
 function itemStatusText(s){
@@ -999,7 +1014,7 @@ function renderItems(t){
     const link = (st === 'failed' || st === 'done' || st === 'downloading')
       ? `<a class="item-link" href="${escapeHtml(url)}" target="_blank" rel="noopener" title="在浏览器打开">${escapeHtml(url)}</a>`
       : '';
-    const err = st === 'failed' && it.error
+    const err = ((st === 'failed' || st === 'skipped') && it.error)
       ? `<div class="item-err">${escapeHtml(it.error)}</div>` : '';
     const retryBtn = (st === 'failed' && t.status !== 'pending' && t.status !== 'running')
       ? `<button class="ghost sm" onclick="retryFailed('${t.id}', '${escapeHtml(it.aweme_id)}')">重新下载</button>`
@@ -1015,7 +1030,7 @@ function renderItems(t){
       </div>
     </div>`;
   }).join('');
-  return `<div class="item-list">${rows}</div>`;
+  return `<div class="item-list" data-tid="${t.id}">${rows}</div>`;
 }
 
 async function retryFailed(tid, awemeId){
