@@ -54,8 +54,7 @@ SetupIconFile=icon.ico
 AllowNoIcons=yes
 ShowLanguageDialog=no
 ; 升级时自动尝试关闭正在使用的程序，避免文件占用导致覆盖失败
-CloseApplications=yes
-ForceCloseApplications=yes
+CloseApplications=force
 UsePreviousAppDir=yes
 ; 安装前展示使用说明（只读，不要求“同意”）
 InfoBeforeFile=..\build\{#DocName}
